@@ -1,0 +1,191 @@
+
+create table departamentos (
+    id_departamento serial primary key,
+    nome varchar(100) not null unique,
+    descricao text
+);
+
+create table colaboradores (
+    id_colaborador serial primary key,
+    id_departamento int not null references departamentos(id_departamento),
+    nome varchar(120) not null,
+    email varchar(150) not null unique,
+    senha text not null,
+    ativo boolean not null default true
+);
+
+create table categorias (
+    id_categoria serial primary key,
+    nome varchar(100) not null unique,
+    descricao text
+);
+
+create table projetos (
+    id_projeto serial primary key,
+    id_colaborador int not null references colaboradores(id_colaborador),
+    nome varchar(150) not null,
+    descricao text,
+    data_inicio date not null,
+    data_fim date not null,
+    status varchar(30) not null default 'planejado',
+    check (data_fim >= data_inicio),
+    check (status in ('planejado', 'em andamento', 'concluido', 'cancelado'))
+);
+
+create table tarefas (
+    id_tarefa serial primary key,
+    id_projeto int not null references projetos(id_projeto),
+    id_colaborador int not null references colaboradores(id_colaborador),
+    id_categoria int not null references categorias(id_categoria),
+    titulo varchar(150) not null,
+    descricao text,
+    data_agendamento date not null,
+    prazo_entrega date not null,
+    data_criacao timestamp,
+    status varchar(30) not null default 'pendente',
+    check (prazo_entrega >= data_agendamento),
+    check (status in ('pendente', 'em andamento', 'concluida', 'atrasada'))
+);
+
+create table historico_tarefas (
+    id_historico serial primary key,
+    id_tarefa int not null references tarefas(id_tarefa),
+    descricao text not null,
+    data_registro timestamp not null default current_timestamp
+);
+
+create table comentarios (
+    id_comentario serial primary key,
+    id_tarefa int not null references tarefas(id_tarefa),
+    id_colaborador int not null references colaboradores(id_colaborador),
+    comentario text not null,
+    data_comentario timestamp default current_timestamp
+);
+
+insert into departamentos (nome, descricao) values
+('tecnologia', 'departamento de tecnologia'),
+('administracao', 'departamento administrativo'),
+('marketing', 'departamento de marketing');
+
+insert into colaboradores (id_departamento, nome, email, senha, ativo) values
+(1, 'joao silva', 'joao@empresa.com', 'senha123', true),
+(2, 'maria oliveira', 'maria@empresa.com', 'maria123', true),
+(3, 'pedro santos', 'pedro@empresa.com', 'pedro123', true);
+
+insert into categorias (nome, descricao) values
+('desenvolvimento', 'tarefas de desenvolvimento'),
+('documentacao', 'tarefas de documentacao'),
+('planejamento', 'tarefas de planejamento');
+
+insert into projetos (id_colaborador, nome, descricao, data_inicio, data_fim, status) values
+(1, 'sistema financeiro', 'desenvolvimento de sistema financeiro', '2026-11-01', '2026-12-20', 'em andamento'),
+(2, 'gestao empresarial', 'projeto de gestao interna', '2026-11-05', '2027-01-15', 'planejado'),
+(3, 'marketing digital', 'campanha de marketing digital', '2026-11-10', '2026-12-30', 'em andamento');
+
+create or replace function fn_validar_tarefa()
+returns trigger as $$
+begin
+    if not exists (
+        select 1
+        from colaboradores
+        where id_colaborador = new.id_colaborador
+        and ativo = true
+    ) then
+        raise exception 'o colaborador precisa estar ativo';
+    end if;
+
+    new.data_criacao = current_timestamp;
+
+    return new;
+end;
+$$ language plpgsql;
+
+create or replace function fn_registrar_historico()
+returns trigger as $$
+begin
+    insert into historico_tarefas (id_tarefa, descricao)
+    values (new.id_tarefa, 'tarefa criada: ' || new.titulo);
+
+    return new;
+end;
+$$ language plpgsql;
+
+create trigger trg_validar_tarefa
+before insert on tarefas
+for each row
+execute function fn_validar_tarefa();
+
+create trigger trg_historico_tarefa
+after insert on tarefas
+for each row
+execute function fn_registrar_historico();
+
+insert into tarefas (id_projeto, id_colaborador, id_categoria, titulo, descricao, data_agendamento, prazo_entrega, status) values
+(1, 1, 1, 'desenvolver tela de login', 'criar tela de acesso ao sistema', '2026-11-12', '2026-11-20', 'em andamento'),
+(2, 2, 2, 'criar documentacao', 'documentar funcionalidades do projeto', '2026-11-13', '2026-11-25', 'pendente'),
+(3, 3, 3, 'planejar campanha', 'organizar planejamento de marketing', '2026-11-14', '2026-12-01', 'pendente');
+
+insert into historico_tarefas (id_tarefa, descricao) values
+(1, 'tarefa em andamento'),
+(2, 'tarefa aguardando inicio'),
+(3, 'tarefa cadastrada no sistema');
+
+insert into comentarios (id_tarefa, id_colaborador, comentario) values
+(1, 1, 'desenvolvimento iniciado'),
+(2, 2, 'documentacao em preparacao'),
+(3, 3, 'planejamento em andamento');
+
+create or replace function fn_buscar_colaboradores(termo_busca text)
+returns table (
+    id_colaborador int,
+    nome varchar(120),
+    email varchar(150),
+    ativo boolean
+)
+as $$
+begin
+    return query
+    select c.id_colaborador, c.nome, c.email, c.ativo
+    from colaboradores c
+    where c.nome ilike '%' || termo_busca || '%'
+    or c.email ilike '%' || termo_busca || '%';
+end;
+$$ language plpgsql;
+
+create or replace view vw_painel_principal as
+select
+    c.nome as colaborador,
+    t.titulo as tarefa,
+    cat.nome as categoria,
+    t.prazo_entrega,
+    t.status
+from tarefas t
+join colaboradores c on t.id_colaborador = c.id_colaborador
+join categorias cat on t.id_categoria = cat.id_categoria;
+
+create or replace view vw_cronograma_prazos as
+select
+    t.id_tarefa,
+    t.titulo as tarefa,
+    t.status,
+    t.data_agendamento,
+    t.prazo_entrega,
+    t.prazo_entrega - current_date as dias_restantes,
+    c.nome as responsavel
+from tarefas t
+join colaboradores c on t.id_colaborador = c.id_colaborador
+order by t.prazo_entrega asc;
+
+select * from colaboradores;
+
+select * from tarefas;
+
+select * from fn_buscar_colaboradores('joao');
+
+select * from vw_painel_principal;
+
+select * from vw_cronograma_prazos;
+
+select * from historico_tarefas;
+
+select * from comentarios;
